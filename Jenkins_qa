@@ -1,0 +1,83 @@
+import groovy.json.JsonSlurper;
+import java.text.SimpleDateFormat
+pipeline {
+    // worker label to use
+    agent {label "Ubuntu20"}
+    // parameters to be used in this pipeline
+    parameters {
+        string(name: 'IMAGE_TO_BUILD', defaultValue: 'alpine314', description: 'Image to build and scan')
+        string(name: 'FATAL_CVSS_SCORE', defaultValue: '8', description: 'Fail the build based on FATAL CVSS SCORE')
+ }
+
+    stages {
+
+
+    stage('Building the image and scan') {
+        steps {
+            script {
+                // build the docker image
+		sh 'docker build --tag test:${BUILD_ID} . '
+                // get the built image id
+                def image_id = sh(
+                    script: 'docker inspect '+ "test:${BUILD_NUMBER}" + ' --format \"{{.ID}}\" | cut -d\":\" -f 2',
+                    returnStdout: true
+                ).trim()
+
+                // print out built image id
+                echo image_id
+                // run the scanner with  the secrets from jenkins secret store
+                withCredentials([
+                    string(credentialsId: 'UPTYCS_CI_SECRET_QA', variable: 'UPTYCS_CI_SECRET'),
+                    string(credentialsId: 'UPTYCS_API_KEY_QA', variable: 'UPTYCS_API_KEY'),
+                    string(credentialsId: 'UPTYCS_API_SECRET_QA', variable: 'UPTYCS_API_SECRET'),
+					string(credentialsId: 'GITHUB_TOKEN', variable: 'GITHUB_TOKEN'),
+                    string(credentialsId: 'JENKINS_TOKEN', variable: 'JENKINS_TOKEN')
+                 ]) {
+                // uptycs scanner and its parameters
+                echo image_id
+		        sh (script: "set > uptycs-env.txt")
+		        sh (script: "cat uptycs-env.txt")
+                def scannerImage = 'bparekhuptycs/kspm:ci-test'
+                def scannerImageOpts = [
+                  '--rm', '--privileged', '--pid host', '--net host', '--restart no',
+                  "--env RUN_DISPLAY_URL=${RUN_DISPLAY_URL}",
+                  '--volume /var/run/docker.sock:/var/run/docker.sock:ro',
+                  '--env JOB_NAME="${JOB_NAME}"',
+                  '--env-file uptycs-env.txt',
+                  '--volume \$(pwd):/opt/uptycs/cloud',
+                ].join(' ')
+                // scanner options
+                def scanArgs = [
+                    "scan",
+                    '--disable-secrets',
+                    '--disable-malware',
+                    "--image-id '${image_id}'",
+                    "--api-key '${UPTYCS_API_KEY}'",
+                    "--api-secret '${UPTYCS_API_SECRET}'",
+                    "--uptycs-secret '${UPTYCS_CI_SECRET}'",
+                    "--config-file uptycs-ci-config.yml",
+                    "--output-name 'ciscan'",
+                    "--ci-runner-type jenkins",
+                    "--uptycs-hostname regscan.uptycs.dev",
+                    "--customer-id '871a76dd-2bae-49e5-8d75-d14a73ce2a31'",
+                    "--github-checks",
+                    "--jenkins-checks",
+                    '--jenkins-token ${JENKINS_TOKEN}',
+                    "--fatal-cvss-score ${params.FATAL_CVSS_SCORE}",
+                    '--approved-email-domain uptycs.com',
+                    '--github-token ${GITHUB_TOKEN}'
+                ].join(' ')
+
+                // run the scanner with docker run command
+               sh (script: "docker run ${scannerImageOpts} ${scannerImage} ${scanArgs}")
+
+
+
+                 }
+            }
+        }
+    }
+
+    }
+
+}
